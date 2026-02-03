@@ -15,7 +15,8 @@ import numpy as np
 from astropy import constants as const
 from scipy.integrate import solve_ivp, simpson
 from scipy.optimize import brentq
-
+# from magn import MagneticField
+from alpha_disc.magn import MagneticField
 sigmaSB = const.sigma_sb.cgs.value
 R_gas = const.R.cgs.value
 G = const.G.cgs.value
@@ -87,9 +88,12 @@ class BaseVerticalStructure:
     F : double
         Moment of viscosity forces in g*cm^2/s^2.
     eps : double, optional
-        Accuracy of vertical structure calculation.
+        Accuracy of vertical structure calculation. Default 1e-5.
     mu : double, optional
-        Molecular weight for ideal gas equation of state.
+        Molecular weight for ideal gas equation of state. Default 0.6.
+    rad_pressure_include : bool
+        Whether to consider the radiation pressure contribution to the total
+        pressure. Default True.
 
     Methods
     -------
@@ -106,13 +110,19 @@ class BaseVerticalStructure:
 
     """
 
-    def __init__(self, Mx, alpha, r, F, eps=1e-5, mu=0.6):
+    def __init__(self, Mx, alpha, r, F, eps=1e-5, mu=0.6, 
+                 rad_pressure_include=True):
         self.mu = mu
         self.Mx = Mx
         self.GM = G * Mx
         self.alpha = alpha
         self.r = r
         self.F = F
+        if rad_pressure_include:
+            self.eta_rad = 1.0
+        else:
+            self.eta_rad = 0.0
+        
         self.omegaK = np.sqrt(self.GM / self.r ** 3)
         self.eps = eps
 
@@ -132,19 +142,32 @@ class BaseVerticalStructure:
         self.P_norm = (4 / 3) * self.Q_norm / (self.alpha * z0 * self.omegaK)
         self.T_norm = self.omegaK ** 2 * self.mu * z0 ** 2 / R_gas
         self.sigma_norm = 28 * self.Q_norm / (3 * self.alpha * z0 ** 2 * self.omegaK ** 3)
+        
+    def rad_pressure(self, T):
+        return 4 * sigmaSB / (3 * c) * T ** 4 * self.eta_rad
 
     def law_of_viscosity(self, P):
         return self.alpha * P
 
     def law_of_rho(self, P, T, full_output):
+        """If full_output==False, returns rho(P, T).
+        
+        Else, returns rho(P, T) and namedtuple containing:
+            dlnRho_dlnPgas_const_T,
+            dlnRho_dlnT_const_Pgas,
+            mu,
+            lnfree_e,
+            grad_ad
+            """
         raise NotImplementedError
 
     def law_of_opacity(self, rho, T, lnfree_e):
+        """Should return kappa(rho, T)"""
         raise NotImplementedError
 
     def viscosity(self, y):
         return self.law_of_viscosity(y[Vars.P] * self.P_norm +
-                                     4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4)
+                                self.rad_pressure(y[Vars.T] * self.T_norm))
 
     def rho(self, y, full_output):
         return self.law_of_rho(y[Vars.P] * self.P_norm, y[Vars.T] * self.T_norm, full_output=full_output)
@@ -152,13 +175,28 @@ class BaseVerticalStructure:
     def opacity(self, y, lnfree_e):
         rho = self.rho(y, full_output=False)
         return self.law_of_opacity(rho, y[Vars.T] * self.T_norm, lnfree_e=lnfree_e)
+    
+    def additional_photospheric_pressure(self):
+        """Additional pressure [cgs] to be added to the photospheric pressure
+        in CGS.
+        Zero in absence of the field; in case of field present it should be overwritten by mixins.
+        """
+        return 0.0
+    
+    def dP_magn_induced_dz(self, z):
+        """Returns d(P magn induced)/dz === d(b_induced_phi**2/8pi)/dz in CGS.    
+        Used as an additional right-hand side for the dPtot/dz:
+            dPtot/dz = (dPtot/dz)_no_field - dP_magn_induced_dz.
+        Zero in absence of the field; in case of field present it should be overwritten by mixins.
+        """
+        return z*0
 
-    def photospheric_pressure_equation(self, tau, P):  # P = P_total
+    def photospheric_pressure_equation(self, tau, P_total):  # P = P_total
         T = self.Teff * (1 / 2 + 3 * tau / 4) ** (1 / 4)
-        P_rad = 4 * sigmaSB / (3 * c) * T ** 4
-        if P - P_rad < 0 or np.isnan(P - P_rad):
-            raise PgasPradNotConvergeError(*(P - P_rad), P_rad=P_rad, t=0.0, z0r=self.z0 / self.r)
-        rho, eos = self.law_of_rho(P - P_rad, T, True)
+        P_rad =  self.rad_pressure(T)
+        if P_total - P_rad < 0 or np.isnan(P_total - P_rad):
+            raise PgasPradNotConvergeError(*(P_total - P_rad), P_rad=P_rad, t=0.0, z0r=self.z0 / self.r)
+        rho, eos = self.law_of_rho(P_total - P_rad, T, True)
         varkappa = self.law_of_opacity(rho, T, lnfree_e=eos.lnfree_e)
         return self.z0 * self.omegaK ** 2 / varkappa
 
@@ -167,10 +205,12 @@ class BaseVerticalStructure:
         solution = solve_ivp(
             self.photospheric_pressure_equation,
             [0, 2 / 3],
-            [1e-7 * self.P_norm + 4 * sigmaSB / (3 * c) * self.Teff ** 4 / 2], rtol=self.eps, method='RK23'
+            [1e-7 * self.P_norm + 0.5 * self.rad_pressure(self.Teff)], rtol=self.eps, method='RK23'
         )
-        P_rad = 4 * sigmaSB / (3 * c) * self.Teff ** 4
+        # P_rad = 4 * sigmaSB / (3 * c) * self.Teff ** 4 * self.eta_rad
+        P_rad = self.rad_pressure(self.Teff)
         result = solution.y[0][-1] - P_rad  # P_gas = P_tot - P_rad
+        result += self.additional_photospheric_pressure()
         if result < 0 or np.isnan(result):
             raise PgasPradNotConvergeError(P_gas=result, P_rad=P_rad, t=0.0, z0r=self.z0 / self.r)
         return result
@@ -197,6 +237,7 @@ class BaseVerticalStructure:
         return y
 
     def dlnTdlnP(self, y, t):
+        """Returns d(lnT)/d(lnPtotal) """
         raise NotImplementedError
 
     def dQdz(self, y, t):
@@ -205,12 +246,14 @@ class BaseVerticalStructure:
 
     def dydt(self, t, y):
         """
-        The right side of ODEs system.
-
+        The right side of ODEs system. Magnetic fields modify this system only
+        as an additional source in a hydrostatic equation:
+            dPtot/dz = -rho wk^2 z - dPmagn/dz,
+        where dPmagn/dz is a known function of z.
         Parameters
         ----------
         t : array-like
-            Modified vertical coordinate (t = 1 - z/z0).
+            Modified vertical coordinate (t = 1 - z/z0, so z = z0(1-t)).
         y :
             Current values of (dimensionless) unknown functions.
 
@@ -223,24 +266,27 @@ class BaseVerticalStructure:
         if y[Vars.P] < 0 or np.isnan(y[Vars.P]):
             try:
                 raise PgasPradNotConvergeError(P_gas=y[Vars.P] * self.P_norm,
-                                               P_rad=4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4,
+                                               P_rad=self.rad_pressure(y[Vars.T] * self.T_norm),
+                                               # P_rad=4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4,
                                                t=t, z0r=self.z0 / self.r, Sigma0_par=self.Sigma0_par)
             except AttributeError:
                 raise PgasPradNotConvergeError(P_gas=y[Vars.P] * self.P_norm,
-                                               P_rad=4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4,
+                                               P_rad=self.rad_pressure(y[Vars.T] * self.T_norm),
+                                               # P_rad=4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4,
                                                t=t, z0r=self.z0 / self.r) from None
         rho, eos = self.rho(y, full_output=True)
 
-        A = rho * (1 - t) * self.omegaK ** 2 * self.z0 ** 2 / self.P_norm
-        B = 16 * sigmaSB / (3 * c) * self.T_norm ** 4 * y[Vars.T] ** 3 / self.P_norm
+        dp_full_dt = rho * (1 - t) * self.omegaK ** 2 * self.z0 ** 2 / self.P_norm # d (P total dimentionless)/dt
+        dp_full_dt += self.dP_magn_induced_dz(z=self.z0 * (1 - t)) * self.z0 / self.P_norm
+        B = 4 * self.rad_pressure(self.T_norm * y[Vars.T]) / y[Vars.T] / self.P_norm
+        P_full = y[Vars.P] * self.P_norm + self.rad_pressure(y[Vars.T] * self.T_norm)
+        
+        dP_full_dt = dp_full_dt * self.P_norm # dP_full/dt
 
-        P_full = y[Vars.P] * self.P_norm + 4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4
-        dP_full = A * self.P_norm
-
-        grad = self.dlnTdlnP(y, t)
-        dTdz = grad * dP_full * y[Vars.T] / P_full
+        grad = self.dlnTdlnP(y, t) # d(ln T) / d(ln P_full) === (P_full/T) * (dT/dP_full)
+        dTdz = grad * dP_full_dt * y[Vars.T] / P_full
         dy[Vars.S] = 2 * rho * self.z0 / self.sigma_norm
-        dy[Vars.P] = A - B * dTdz
+        dy[Vars.P] = dp_full_dt - B * dTdz
         dy[Vars.Q] = self.dQdz(y, t)
         dy[Vars.T] = dTdz
         return dy
@@ -326,10 +372,11 @@ class BaseVerticalStructure:
 
         """
         varkappa_C, rho_C, T_C, P_C, Sigma0 = self.parameters_C()
-
-        Pi_1 = (self.omegaK ** 2 * self.z0 ** 2 * rho_C) / (P_C + 4 * sigmaSB / (3 * c) * T_C ** 4)
+        P_C_tot = P_C + self.rad_pressure(T_C)
+        Pi_1 = (self.omegaK ** 2 * self.z0 ** 2 * rho_C) / P_C_tot
+        
         Pi_2 = Sigma0 / (2 * self.z0 * rho_C)
-        Pi_3 = (3 / 4) * (self.alpha * self.omegaK * (P_C + 4 * sigmaSB / (3 * c) * T_C ** 4) * Sigma0) / (
+        Pi_3 = (3 / 4) * (self.alpha * self.omegaK * P_C_tot * Sigma0) / (
                 self.Q0 * rho_C)
         Pi_4 = (3 / 32) * (self.Teff / T_C) ** 4 * (Sigma0 * varkappa_C)
 
@@ -401,13 +448,13 @@ class RadiativeTempGradient:
         if t == 1:
             dTdz_der = (self.dQdz(y, t) / y[Vars.T] ** 3) * 3 * varkappa * rho * self.z0 * self.Q_norm / (
                     16 * sigmaSB * self.T_norm ** 4)
-            P_full = y[Vars.P] * self.P_norm + 4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4
+            P_full = y[Vars.P] * self.P_norm + self.rad_pressure(y[Vars.T]*self.T_norm)
             dP_full_der = - rho * self.omegaK ** 2 * self.z0 ** 2
             dlnTdlnP_rad = (P_full / y[Vars.T]) * (dTdz_der / dP_full_der)
         else:
             dTdz = (abs(y[Vars.Q]) / y[Vars.T] ** 3) * 3 * varkappa * rho * self.z0 * self.Q_norm / (
                     16 * sigmaSB * self.T_norm ** 4)
-            P_full = y[Vars.P] * self.P_norm + 4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4
+            P_full = y[Vars.P] * self.P_norm + self.rad_pressure(y[Vars.T]*self.T_norm)
             dP_full = rho * (1 - t) * self.omegaK ** 2 * self.z0 ** 2
             dlnTdlnP_rad = (P_full / y[Vars.T]) * (dTdz / dP_full)
         return dlnTdlnP_rad
@@ -468,6 +515,28 @@ class IdealBellLin1994VerticalStructure(IdealGasMixin, BellLin1994TwoComponentOp
 
     """
     pass
+
+class IdealKramersVerticalStructureMagnetic(MagneticField, IdealGasMixin, KramersOpacityMixin, 
+                                            RadiativeTempGradient, BaseVerticalStructure):
+    """
+    Vertical structure class for Kramers opacity law and ideal gas EOS.
+    Includes the magnetic field.
+
+    """
+    pass
+
+
+class IdealBellLin1994VerticalStructureMagnetic(MagneticField, IdealGasMixin,
+                                    BellLin1994TwoComponentOpacityMixin, RadiativeTempGradient,
+                                        BaseVerticalStructure):
+    """
+    Vertical structure class for opacity laws from (Bell & Lin, 1994) and ideal gas EOS.
+    Includes the magnetic field.
+
+    """
+    pass
+
+
 
 
 def main():
