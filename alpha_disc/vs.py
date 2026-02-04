@@ -15,7 +15,6 @@ import numpy as np
 from astropy import constants as const
 from scipy.integrate import solve_ivp, simpson
 from scipy.optimize import brentq
-# from magn import MagneticField
 from alpha_disc.magn import MagneticField
 sigmaSB = const.sigma_sb.cgs.value
 R_gas = const.R.cgs.value
@@ -150,9 +149,9 @@ class BaseVerticalStructure:
         return self.alpha * P
 
     def law_of_rho(self, P, T, full_output):
-        """If full_output==False, returns rho(P, T).
+        """If full_output==False, should return rho(P, T).
         
-        Else, returns rho(P, T) and namedtuple containing:
+        Else, should return rho(P, T) and namedtuple containing:
             dlnRho_dlnPgas_const_T,
             dlnRho_dlnT_const_Pgas,
             mu,
@@ -170,11 +169,11 @@ class BaseVerticalStructure:
                                 self.rad_pressure(y[Vars.T] * self.T_norm))
 
     def rho(self, y, full_output):
-        return self.law_of_rho(y[Vars.P] * self.P_norm, y[Vars.T] * self.T_norm, full_output=full_output)
+        return self.law_of_rho(P=y[Vars.P] * self.P_norm, T=y[Vars.T] * self.T_norm, full_output=full_output)
 
     def opacity(self, y, lnfree_e):
         rho = self.rho(y, full_output=False)
-        return self.law_of_opacity(rho, y[Vars.T] * self.T_norm, lnfree_e=lnfree_e)
+        return self.law_of_opacity(rho=rho, T=y[Vars.T] * self.T_norm, lnfree_e=lnfree_e)
     
     def additional_photospheric_pressure(self):
         """Additional pressure [cgs] to be added to the photospheric pressure
@@ -196,8 +195,8 @@ class BaseVerticalStructure:
         P_rad =  self.rad_pressure(T)
         if P_total - P_rad < 0 or np.isnan(P_total - P_rad):
             raise PgasPradNotConvergeError(*(P_total - P_rad), P_rad=P_rad, t=0.0, z0r=self.z0 / self.r)
-        rho, eos = self.law_of_rho(P_total - P_rad, T, True)
-        varkappa = self.law_of_opacity(rho, T, lnfree_e=eos.lnfree_e)
+        rho, eos = self.law_of_rho(P = P_total - P_rad, T=T, full_output=True)
+        varkappa = self.law_of_opacity(rho=rho, T=T, lnfree_e=eos.lnfree_e)
         return self.z0 * self.omegaK ** 2 / varkappa
 
     def P_ph(self):
@@ -205,9 +204,9 @@ class BaseVerticalStructure:
         solution = solve_ivp(
             self.photospheric_pressure_equation,
             [0, 2 / 3],
-            [1e-7 * self.P_norm + 0.5 * self.rad_pressure(self.Teff)], rtol=self.eps, method='RK23'
+            [1e-7 * self.P_norm + 0.5 * self.rad_pressure(self.Teff)],
+            rtol=self.eps, method='RK23'
         )
-        # P_rad = 4 * sigmaSB / (3 * c) * self.Teff ** 4 * self.eta_rad
         P_rad = self.rad_pressure(self.Teff)
         result = solution.y[0][-1] - P_rad  # P_gas = P_tot - P_rad
         result += self.additional_photospheric_pressure()
@@ -267,12 +266,10 @@ class BaseVerticalStructure:
             try:
                 raise PgasPradNotConvergeError(P_gas=y[Vars.P] * self.P_norm,
                                                P_rad=self.rad_pressure(y[Vars.T] * self.T_norm),
-                                               # P_rad=4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4,
                                                t=t, z0r=self.z0 / self.r, Sigma0_par=self.Sigma0_par)
             except AttributeError:
                 raise PgasPradNotConvergeError(P_gas=y[Vars.P] * self.P_norm,
                                                P_rad=self.rad_pressure(y[Vars.T] * self.T_norm),
-                                               # P_rad=4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4,
                                                t=t, z0r=self.z0 / self.r) from None
         rho, eos = self.rho(y, full_output=True)
 
@@ -374,7 +371,6 @@ class BaseVerticalStructure:
         varkappa_C, rho_C, T_C, P_C, Sigma0 = self.parameters_C()
         P_C_tot = P_C + self.rad_pressure(T_C)
         Pi_1 = (self.omegaK ** 2 * self.z0 ** 2 * rho_C) / P_C_tot
-        
         Pi_2 = Sigma0 / (2 * self.z0 * rho_C)
         Pi_3 = (3 / 4) * (self.alpha * self.omegaK * P_C_tot * Sigma0) / (
                 self.Q0 * rho_C)

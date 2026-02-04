@@ -363,7 +363,7 @@ def Convective_parameter(vs):
     return conv_param_z, conv_param_sigma
 
 
-def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='solar', F_in=0, nu_irr=None, #!!!
+def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='solar', F_in=0, nu_irr=None,
                      L_X_irr=None, spectrum_irr=None, spectrum_irr_par=None,
                      args_spectrum_irr=(), kwargs_spectrum_irr={},
                      cos_theta_irr=None, cos_theta_irr_exp=1 / 12, C_irr=None, T_irr=None,
@@ -482,6 +482,8 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
 
     Returns
     -------
+    -------------------------- if to_save == True: ----------------------------
+
     Table with calculated Vertical disc profile will save to path_dots. Table contains:
         1) input parameters of the system -- M in Msun, alpha, r in cm and in rg, effective temperature Teff
            (viscous temperature Tvis in case of irradiation), accretion rate Mdot, viscous torque F,
@@ -508,6 +510,16 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
     In case of tabular EoS:
         5) grad_ad, free_e -- adiabatic temperature gradient dlnT/dlnP and
            mean number of free electrons per nucleon.
+           
+    ------------------------- if to_return == True: ---------------------------
+        A namedtuple containing:[
+                      "t", "S", "P", 'T', "Q", "rho", "varkappa", "tau", "grad",
+                      "r", "r_rg", "Sigma0", "Mdot", "Teff", "F", "z0r",
+                      "rho_C", "T_C", "P_C", "structure", 'mu',
+                       "PradPgas_C", "varkappa_C",
+                      "tau_C",
+                      "Pi1", "Pi2", "Pi3", "Pi4",
+                  ]
 
     """
     if path_dots is None and to_save:
@@ -582,12 +594,11 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
         Pi1, Pi2, Pi3, Pi4 = vs.Pi_finder()
         header_Pi = '\nPi1 = {:f}, Pi2 = {:f}, Pi3 = {:f}, Pi4 = {:f}'.format(*vs.Pi_finder())
     header = header + header_input + header_C + header_norm + header_conv + header_Pi + header_input_irr
-    if path_dots is not None:
+    if path_dots is not None and to_save:
         np.savetxt(path_dots, dots_arr, header=header)
     if to_return:
         VertStructureResults = namedtuple("VertStructureResults", [
                     "t", "S", "P", 'T', "Q", "rho", "varkappa", "tau", "grad",
-                    "grad_ad", "free_e",
                     "r", "r_rg", "Sigma0", "Mdot", "Teff", "F", "z0r",
                     "rho_C", "T_C", "P_C", "structure", 'mu',
                      "PradPgas_C", "varkappa_C",
@@ -596,7 +607,7 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
                 ])
         _res = VertStructureResults(t=t, S=S, P=P, T=T, Q=Q, rho=rho,
                 varkappa=varkappa, tau=tau_arr, grad=grad_plot(np.log(P_full)),
-                r=r, r_rg=r/rg, grad_ad=None, free_e=None, Sigma0=Sigma0,
+                r=r, r_rg=r/rg, Sigma0=Sigma0,
                     Mdot=Mdot, Teff=Teff, F=F, z0r=z0r, rho_C=rho_C, T_C=T_C,
                     P_C=P_C, structure=structure, mu=mu, PradPgas_C=delta,
                     varkappa_C=varkappa_C, tau_C=tau, 
@@ -605,7 +616,7 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
     return
 
 
-def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='solar', F_in=0, nu_irr=None,#!!!
+def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='solar', F_in=0, nu_irr=None,
             L_X_irr=None, spectrum_irr=None, spectrum_irr_par=None, args_spectrum_irr=(), kwargs_spectrum_irr={},
             cos_theta_irr=None, cos_theta_irr_exp=1 / 12, C_irr=None, T_irr=None,
             z0r_start_estimation=None, Sigma0_start_estimation=None, P_ph_0=None, verbose=False,
@@ -720,10 +731,12 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
         Where to save data table.
     verbose_scurve : bool
         Whether to print info during the S-curve calculation.
-        Default is False.
+        Default is True.
     to_return : bool
         Whether to return a namedtuple containing the calculated quantities and
-        debug data. Default is False.
+        debug data. Default is False, and returned are: (Sigma_minus_index, 
+        Sigma_minus_index). If True, returned are: (Sigma_minus_index, 
+        Sigma_minus_index, SCurveResults). 
     to_save : bool
         Whether to save the calculated data in a file. Default is True.
     magn_args : dict or None, optional
@@ -734,7 +747,9 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
         Whether to include the radiation pressure contribution in the equation
         of state. Default is True.
     Returns
-    -------
+    -------    
+    -------------------------- if to_save == True: ----------------------------
+
     Table with calculated S-curve will save to path_dots. Table contains:
         1) input parameters of the system -- M in Msun, alpha, r in cm and in rg, structure type,
            mu (in case of analytical EoS) or abundance (in case of tabular EoS);
@@ -757,6 +772,13 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
 
     Also table contains Sigma_plus_index, Sigma_minus_index -- turn point indexes of the S-curve.
     Finally, table contains 'Non-converged_fits' -- number of unsuccessfully fitted structures.
+    
+    ------------------------- if to_return == True: ---------------------------
+    If to_return == False, returned are: (Sigma_minus_index, 
+           Sigma_minus_index). If True, returned are: (Sigma_minus_index, 
+           Sigma_minus_index, SCurveResults). SCurveResults contain:
+            [Sigma0, Mdot, Teff, F, z0r, T_C,
+            rho_C, P_C, tau, PradPgas_C, varkappa_C].
 
     """
     if path_dots is None and to_return:
@@ -799,15 +821,12 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
             header += ' \tcost \tSigma_ph'
         header = header + '\nAll values are in CGS units.' + header_end
-        if to_return:
+        if to_save:
             np.savetxt(path_dots, [], header=header)
         
     SCurveResults = namedtuple("SCurveResults", [
-                # "r", "r_rg", 
                 "Sigma0", "Mdot", "Teff", "F", "z0r", "T_C",
                 "rho_C", "P_C", "tau", "PradPgas_C", "varkappa_C",
-                # "free_e", "conv_param_z", "conv_param_sigma",
-                # "Pi1", "Pi2", "Pi3", "Pi4",
             ])
     acc = {k: [] for k in SCurveResults._fields}
 
@@ -936,7 +955,7 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
     return Sigma_minus_index, Sigma_plus_index
 
 
-def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abundance='solar', F_in=0, #!!!
+def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abundance='solar', F_in=0, 
                    nu_irr=None, L_X_irr=None, spectrum_irr=None, spectrum_irr_par=None, args_spectrum_irr=(),
                    kwargs_spectrum_irr={}, cos_theta_irr=None, cos_theta_irr_exp=1 / 12, C_irr=None, T_irr=None,
                    z0r_start_estimation=None, Sigma0_start_estimation=None, P_ph_0=None, verbose=False,

@@ -1,25 +1,10 @@
+#!/usr/bin/env python3
 import numpy as np
 from astropy import constants as const
-# from scipy.optimize import fsolve
-# from scipy import optimize
-# import scipy.integrate as integrate
-# from scipy.integrate import integrate.simpson
-# from scipy.misc import derivative
 from scipy.optimize import brentq
 from numpy import sin, cos, pi
 import inspect
 
-# import matplotlib.pyplot as plt
-# import pandas as pd
-# import time
-# from joblib import Parallel, delayed
-# import multiprocessing
-# from scipy.interpolate import splev, splrep
-# from utils import unpack_params, KNOWN_NAMES, default_params
-# from opacity import Opac
-
-#np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning) 
-#np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning) 
 G = const.G.cgs.value
 R_GAS = const.R.cgs.value
 K_BOLTZ = const.k_B.cgs.value
@@ -28,10 +13,6 @@ C_LIGHT = const.c.cgs.value
 SIGMA_STEFBOLTZ = const.sigma_sb.cgs.value
 R_SOLAR = const.R_sun.cgs.value
 M_SOLAR = const.M_sun.cgs.value
-# importopac = True
-
-# KAPPA_TH = 0.335 #томпсоновская непрозрачность
-# KAPPA_0_FREEFREE = 5e24
 
 ALLOWED_R0_MODELS = ['alfven', 'kuzinlipunova', 'kluzniakrappaport07_i',
                   'kluzniakrappaport07_ii', 'wang97', 'standard']
@@ -97,15 +78,9 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
     
     Parameters
     ----------
-    mu_magn : float
-        Magnetic dipole moment of the star [G cm^3].
-    Mx : float
-        Stellar Mx [g].
-    Mdot : float
-        Mx accretion rate [g s^-1].
     model : {'Alfven', 'KuzinLipunova', 'KluzniakRappaport07_I',
              'KluzniakRappaport07_II', 'Wang97', 'Standard'}
-        Choice of inner-radius prescription:
+        Choice of inner-radius prescription (case-insensitive):
         - 'Standard': maximum of r_star and R_ISCO. 
         - 'Alfven' : r0 = ra_coef * r_A (Alfven radius defined without any numerical
                                coefficients, multiplied by ra_coef).
@@ -114,18 +89,24 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
             (ArXiv 0709.2361, eq. 17).
         - 'KluzniakRappaport07_II' : Kluźniak & Rappaport (2007) case II
             (ArXiv 0709.2361, eq. B7).
-        - 'wang97' : Wang (1997) prescription 
+        - 'Wang97' : Wang (1997) prescription 
             (https://ui.adsabs.harvard.edu/abs/1997ApJ...475L.135W/abstract, 
              eq. (7) with \Gamma === 1)
+    Mx : float
+        Stellar Mx [g].
+    mu_magn : float, optional
+        Magnetic dipole moment of the star [G cm^3]. Default is None.
+    Mdot : float, optional
+        Mx accretion rate [g s^-1]. Default is None.
     r_star : float or None, optional
         Stellar radius (cm). Used as a hard lower limit together with ISCO. 
-        If None, set to R_ISCO.
+        If None, set to R_ISCO. Default is None.
     chi_deg : float, optional
         Angle chi between the magnetic dipole axis and the disc symmetry axis,
-        in degrees. Default is 0.
+        in degrees. Default is None.
     freq : float, optional
         Stellar spin frequency (Hz). Used for the corotation radius and light cylinder.
-        Default is 1.0.
+        Default is None.
     r_lower_limit : {float, 'rcor', 'rlight', None}, optional
         Additional lower bound to apply to r0. If a string:
         - 'rcor', use r_c (corotation radius).
@@ -135,16 +116,16 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
         Additional upper bound to apply to r0. Same string semantics as
         r_lower_limit. If None, no extra upper bound is applied. Default is None.
     ra_coef : float, optional
-        Coefficient for the Alfven radius. Default is 1.0.
+        Coefficient for the Alfven radius. Default is None.
     eta : float, optional
         Coupling/efficiency/penetration factor appearing in Kuzin-Lipunova and
-        Wang models. Default is 1.0.
+        Wang models. Default is None.
     kappa : float, optional
-        Parameter entering the Kuzin–Lipunova forms. Default is 0.5.
+        Parameter entering the Kuzin–Lipunova forms. Default is None.
     delta0_in : float, optional
         Boundary layer thickness parameter (dimensionless) used in the models
         of Kuzin-Lipunova and Wang97.
-        Default is 0.01.
+        Default is None.
     
     Returns
     -------
@@ -185,8 +166,7 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
         _c2 = 1 - _s2
         _f_p = f_p(eta=eta, delta0_in=delta0_in, chi_deg=chi_deg)
 
-        ### special case eta=0
-        if eta < 1e-3:
+        if eta < 1e-3: ### special case eta=0
             w = _ra_rc**1.5 * (2 * kappa * _f_p)**(3/7)
         else:
             one = lambda _w: (1-_w) * eta**2 
@@ -196,7 +176,6 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
             try:
                 w = brentq(to_solve, 1e-10, 10000)
             except:
-                # print("Equation for r0 was not solved, returning rmax...")
                 w = 0
         _r0 = _rc * w**(2/3)
 
@@ -205,7 +184,6 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
         try:
             w = brentq(to_solve, 1e-10, 10000)
         except:
-            # print("Equation for r0 was not solved, returning rmax...")
             w = 0
         _r0 = _rc * w**(2/3)
         
@@ -214,7 +192,6 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
         try:
             w = brentq(to_solve, 1e-10, 10000)
         except:
-            # print("Equation for r0 was not solved, returning rmax...")
             w = 0
         _r0 = _rc * w**(2/3)
         
@@ -231,7 +208,6 @@ def radius_inner(Mx, model, mu_magn=None, Mdot=None,r_star=None, chi_deg=None, f
         try:
             w = brentq(to_solve, 1e-10, 10000)
         except:
-            # print("Equation for r0 was not solved, returning rmax...")
             w = 0
         _r0 = _rc * w**(2/3)
         
@@ -414,7 +390,7 @@ def magnetic_torque(r, mu_magn=None, Mx=None, r0=None, model=None, freq=None,
     return _F_magn.item() if np.ndim(r)==0 else _F_magn
 
         
-class MagneticField: #!!!
+class MagneticField: 
     """
         A mixin for the magnetic field treatment in the vertical structure 
         calculation.
@@ -453,7 +429,6 @@ class MagneticField: #!!!
                 raise ValueError(f"""The model in magn_args in the class MagneticField
                                  \nshould be one of:{ALLOWED_R0_MODELS}.""")
             self.model = magn_args['model']
-            self.r_star = magn_args['r_star']
         self.magn_args = magn_args
             
         if self.model != 'standard':
@@ -462,6 +437,7 @@ class MagneticField: #!!!
     def _set_magn_pars(self, magn_args):
         self.mu_magn = magn_args['mu_magn']
         self.model = magn_args['model']
+        self.r_star = magn_args['r_star']
         
         if self.model.lower() == 'alfven':
             self.ra_coef = magn_args['ra_coef']
@@ -534,7 +510,7 @@ class MagneticField: #!!!
             return z*0
         
     
-class ViscousTorque: #!!!
+class ViscousTorque:
     """
     A class sumarizing the information about the visocus and magnetic torques
     distribution over radius, all that can be found prior to soling for the 
@@ -605,7 +581,6 @@ class ViscousTorque: #!!!
                 data_dict=self.magn_args)
         
     def _fn(self, Mdot, r, n=1):
-        # return 1. - (self.r0(Mdot) / r)**(n/2)
         return fn(dist0 = self.r0(Mdot), dist=r, n=n)
     
     def _w_kepl(self, r):
@@ -631,7 +606,6 @@ class ViscousTorque: #!!!
         return 0.75 * (self.F_vis(Mdot, r) / 2 / pi / r**2) * self._w_kepl(r)
     
     def T_eff(self, Mdot, r):
-        ### No irradiation...
         return (self.Q_vis(Mdot, r) / SIGMA_STEFBOLTZ)**(1 / 4)
     
     def Mdot_from_F(self, F, r):
@@ -648,7 +622,6 @@ class ViscousTorque: #!!!
                           a=1.0, b=1e22)
         except ValueError:
             print("Could not solve for Mdot given Teff; returning Mdot from simple standard expression.")
-            # return (F - self.F_in) / self.F_standard(Mdot=1.0, r=r)
             _F = 8 * pi / 3 * self._h(r) ** 7 / self.GM ** 4 * SIGMA_STEFBOLTZ * Teff ** 4
             return (_F - self.F_in) / self.F_standard(Mdot=1.0, r=r)
         
