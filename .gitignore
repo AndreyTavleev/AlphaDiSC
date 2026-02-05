@@ -1,0 +1,33 @@
+# ---- Python bytecode / caches ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+*.ipynb
+
+# ---- Build / packaging ----
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ---- Virtual envs ----
+.venv/
+venv/
+env/
+
+# ---- Temporary / local output / local test folders ----
+temp/
+tmp/
+*.log
+/*.dat
+/alpha_disc/tests_magn.py
+
+# ---- OS/editor junk ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+

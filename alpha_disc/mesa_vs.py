@@ -36,7 +36,7 @@ from scipy.integrate import simpson
 from scipy.optimize import root, least_squares, brentq
 
 from alpha_disc.vs import BaseVerticalStructure, Vars, IdealGasMixin, RadiativeTempGradient, PgasPradNotConvergeError
-
+from alpha_disc.magn import MagneticField
 sigmaSB = const.sigma_sb.cgs.value
 sigmaT = const.sigma_T.cgs.value
 atomic_mass = const.u.cgs.value
@@ -85,8 +85,8 @@ class PphNotConvergeError(Exception):
 
 
 class BaseMesaVerticalStructure(BaseVerticalStructure):
-    def __init__(self, Mx, alpha, r, F, eps=1e-5, mu=0.6, abundance='solar'):
-        super().__init__(Mx, alpha, r, F, eps=eps, mu=mu)
+    def __init__(self, Mx, alpha, r, F, eps=1e-5, mu=0.6, abundance='solar', **kwargs):
+        super().__init__(Mx, alpha, r, F, eps=eps, mu=mu, **kwargs)
         self.mesaop = Opac(abundance)
 
 
@@ -220,7 +220,8 @@ class RadiativeAdiabaticGradient:
     def dlnTdlnP(self, y, t):
         rho, eos = self.rho(y, True)
         varkappa = self.opacity(y, lnfree_e=eos.lnfree_e)
-        P_full = y[Vars.P] * self.P_norm + 4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4
+        # P_full = y[Vars.P] * self.P_norm + 4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4
+        P_full = y[Vars.P] * self.P_norm + self.rad_pressure(y[Vars.T] * self.T_norm)
 
         if t == 1:
             dTdz_der = (self.dQdz(y, t) / y[Vars.T] ** 3) * 3 * varkappa * rho * self.z0 * self.Q_norm / (
@@ -250,7 +251,7 @@ class RadConvTempGradient:
     def dlnTdlnP(self, y, t):
         rho, eos = self.rho(y, True)
         varkappa = self.opacity(y, lnfree_e=eos.lnfree_e)
-        P_full = y[Vars.P] * self.P_norm + 4 * sigmaSB / (3 * c) * y[Vars.T] ** 4 * self.T_norm ** 4
+        P_full = y[Vars.P] * self.P_norm + self.rad_pressure(y[Vars.T] * self.T_norm)
 
         if t == 1:
             dTdz_der = (self.dQdz(y, t) / y[Vars.T] ** 3) * 3 * varkappa * rho * self.z0 * self.Q_norm / (
@@ -709,6 +710,16 @@ class MesaVerticalStructure(MesaGasMixin, MesaOpacityMixin, RadiativeTempGradien
     """
     pass
 
+# Classes with MESA opacity without Irradiation
+class MesaVerticalStructureMagnetic(MagneticField, MesaGasMixin, MesaOpacityMixin, 
+                                    RadiativeTempGradient, BaseMesaVerticalStructure):
+    """
+    Vertical structure class for MESA opacities and EoS with radiative energy transport.
+    Includes the magnetic field.
+
+    """
+    pass
+
 
 class MesaIdealGasVerticalStructure(IdealGasMixin, MesaOpacityMixin, RadiativeTempGradient, BaseMesaVerticalStructure):
     """
@@ -717,6 +728,14 @@ class MesaIdealGasVerticalStructure(IdealGasMixin, MesaOpacityMixin, RadiativeTe
     """
     pass
 
+class MesaIdealGasVerticalStructureMagnetic(MagneticField, IdealGasMixin, 
+                                            MesaOpacityMixin, RadiativeTempGradient, BaseMesaVerticalStructure):
+    """
+    Vertical structure class for MESA opacities and ideal gas EoS with radiative energy transport.
+    Includes the magnetic field.
+
+    """
+    pass
 
 class MesaVerticalStructureAd(MesaGasMixin, MesaOpacityMixin, AdiabaticTempGradient, BaseMesaVerticalStructure):
     """
@@ -724,6 +743,16 @@ class MesaVerticalStructureAd(MesaGasMixin, MesaOpacityMixin, AdiabaticTempGradi
 
     """
     pass
+
+class MesaVerticalStructureAdMagnetic(MagneticField, MesaGasMixin, MesaOpacityMixin,
+                                      AdiabaticTempGradient, BaseMesaVerticalStructure):
+    """
+    Vertical structure class for MESA opacities and EoS with adiabatic energy transport.
+    Includes the magnetic field.
+
+    """
+    pass
+
 
 
 class MesaVerticalStructureRadAd(MesaGasMixin, MesaOpacityMixin, RadiativeAdiabaticGradient, BaseMesaVerticalStructure):
@@ -733,10 +762,29 @@ class MesaVerticalStructureRadAd(MesaGasMixin, MesaOpacityMixin, RadiativeAdiaba
     """
     pass
 
+class MesaVerticalStructureRadAdMagnetic(MagneticField, MesaGasMixin, MesaOpacityMixin,
+                                         RadiativeAdiabaticGradient, BaseMesaVerticalStructure):
+    """
+    Vertical structure class for MESA opacities and EoS with radiative+adiabatic energy transport.
+    Includes the magnetic field.
+
+
+    """
+    pass
+
 
 class MesaVerticalStructureRadConv(MesaGasMixin, MesaOpacityMixin, RadConvTempGradient, BaseMesaVerticalStructure):
     """
     Vertical structure class for MESA opacities and EoS with radiative+convective energy transport.
+
+    """
+    pass
+
+class MesaVerticalStructureRadConvMagnetic(MagneticField, MesaGasMixin, 
+                                MesaOpacityMixin, RadConvTempGradient, BaseMesaVerticalStructure):
+    """
+    Vertical structure class for MESA opacities and EoS with radiative+convective energy transport.
+    Includes the magnetic field.
 
     """
     pass

@@ -22,7 +22,8 @@ import numpy as np
 from astropy import constants as const
 from scipy.integrate import simpson
 from scipy.interpolate import InterpolatedUnivariateSpline
-
+from collections import namedtuple
+from alpha_disc.magn import ViscousTorque
 import alpha_disc.vs as vert
 
 try:
@@ -38,7 +39,8 @@ c = const.c.cgs.value
 
 def StructureChoice(M, alpha, r, Par, input, structure, mu=0.6, abundance='solar', F_in=0, nu_irr=None, L_X_irr=None,
                     spectrum_irr=None, spectrum_irr_par=None, args_spectrum_irr=(), kwargs_spectrum_irr={},
-                    C_irr=None, T_irr=None, cos_theta_irr=None, cos_theta_irr_exp=1 / 12):
+                    C_irr=None, T_irr=None, cos_theta_irr=None, cos_theta_irr_exp=1 / 12,
+                    magn_args=None, rad_pressure_include=True):
     """
     Initialise the chosen vertical structure object.
 
@@ -114,6 +116,11 @@ def StructureChoice(M, alpha, r, Par, input, structure, mu=0.6, abundance='solar
     T_irr : double
         If structure in ['MesaIrrZero', 'MesaRadAdIrrZero', 'MesaRadConvIrrZero'],
         T_irr is the irradiation temperature.
+    magn_args : dict
+        If the magnetic field treatment is to be included, this dicionary 
+        should comtain the parameters necessary for the calculation of the 
+        magneic torque, inner radius, etc. Only possible for models without
+        irratiation. Default None.
 
     Returns
     -------
@@ -127,74 +134,119 @@ def StructureChoice(M, alpha, r, Par, input, structure, mu=0.6, abundance='solar
         Accretion rate in g/s.
 
     """
-    h = np.sqrt(G * M * r)
-    rg = 2 * G * M / c ** 2
-    r_in = 3 * rg
-    if r <= r_in:
-        raise Exception(f'Radius r should be greater than inner radius r_in = 3*rg. '
+    Torques = ViscousTorque(Mx=M, F_in=F_in, magn_args=magn_args)
+    rg = Torques.rg
+    # r_in = Torques.r0
+    if r <= 3*rg:
+        raise Exception(f'Radius r should be greater than R_ISCO = 3*rg. '
                         f'Actual radius r = {r / rg:g} rg.')
-    func = 1 - np.sqrt(r_in / r)
     if input == 'Teff':
         Teff = Par
-        F = 8 * np.pi / 3 * h ** 7 / (G * M) ** 4 * sigmaSB * Par ** 4
-        Mdot = (F - F_in) / (h * func)
+        Mdot = Torques.Mdot_from_Teff(Teff=Teff, r=r)
         if Mdot < 0:
-            raise Exception(f'Mdot = {Mdot:g} g/s < 0, incorrect F_in = {F_in:g} g*cm^2/s^2.')
-    elif input == 'Mdot':
-        Mdot = Par
-        F = Par * h * func + F_in
-        Teff = (3 / (8 * np.pi) * (G * M) ** 4 * F / (sigmaSB * h ** 7)) ** (1 / 4)
-    elif input == 'Mdot_Mdot_edd':
-        Mdot = Par * 1.39e18 * M / M_sun
-        F = Mdot * h * func + F_in
-        Teff = (3 / (8 * np.pi) * (G * M) ** 4 * F / (sigmaSB * h ** 7)) ** (1 / 4)
-    elif input == 'Mdot_Msun_yr':
-        Mdot = Par * M_sun / 31557600.0
-        F = Mdot * h * func + F_in
-        Teff = (3 / (8 * np.pi) * (G * M) ** 4 * F / (sigmaSB * h ** 7)) ** (1 / 4)
+            raise Exception(f'Mdot = {Mdot:g} g/s < 0, incorrect F_in = {F_in:g} g*cm^2/s^2.')  
+        F = Torques.F_vis(Mdot, r)
+    elif input in ('Mdot', 'Mdot_Mdot_edd', 'Mdot_Msun_yr'):
+        if input == 'Mdot': Mdot = Par
+        if input == 'Mdot_Mdot_edd': Mdot = Par * 1.39e18 * M / M_sun
+        if input == 'Mdot_Msun_yr': Mdot = Par * M_sun / 31557600.0
+        F = Torques.F_vis(Mdot, r)
+        Teff = Torques.T_eff(Mdot, r)
     elif input == 'F':
         F = Par
-        Mdot = (Par - F_in) / (h * func)
+        Mdot = Torques.Mdot_from_F(F=F, r=r)
         if Mdot < 0:
             raise Exception(f'Mdot = {Mdot:g} g/s < 0, incorrect F_in = {F_in:g} g*cm^2/s^2.')
-        Teff = (3 / (8 * np.pi) * (G * M) ** 4 * Par / (sigmaSB * h ** 7)) ** (1 / 4)
+        Teff = Torques.T_eff(Mdot, r)
     else:
         raise Exception("Incorrect input, try 'Teff', 'F', 'Mdot', 'Mdot_Mdot_edd' or 'Mdot_Msun_yr'.")
+        
+    if magn_args is not None and structure in ('MesaIrrZero', 'MesaRadAdIrrZero',
+                                              'MesaRadConvIrrZero', 'MesaIrr',
+                                              'MesaRadAdIrr', 'MesaRadConvIrr'):
+        print("""A structure with irradiation was chosen, but the magnetic field is not supported for this case.
+              \nMagnetic field is set to zero.""")
+    r_in = Torques.r0(Mdot)
+    if r <= r_in:
+        raise Exception(f'Radius r should be greater than the inner radius = {r_in:g} cm. '
+                        f'Actual radius r = {r / r_in:g} r_in.')
 
     if structure == 'Kramers':
-        vs = vert.IdealKramersVerticalStructure(M, alpha, r, F, mu=mu)
+        if magn_args is None:
+            vs = vert.IdealKramersVerticalStructure(M, alpha, r, F, mu=mu,
+                                    rad_pressure_include=rad_pressure_include)
+        else:
+            vs = vert.IdealKramersVerticalStructureMagnetic(M, alpha, r, F, mu=mu,
+                                                            magn_args=magn_args,
+                                                            rad_pressure_include=rad_pressure_include)
     elif structure == 'BellLin':
-        vs = vert.IdealBellLin1994VerticalStructure(M, alpha, r, F, mu=mu)
+        if magn_args is None:
+            vs = vert.IdealBellLin1994VerticalStructure(M, alpha, r, F, mu=mu,
+                                                        rad_pressure_include=rad_pressure_include)
+        else:
+            vs= vert.IdealBellLin1994VerticalStructureMagnetic(M, alpha, r, F, mu=mu,
+                                                            magn_args=magn_args,
+                                                            rad_pressure_include=rad_pressure_include)
     elif structure == 'Mesa':
         try:
             if np.isnan(mesa_vs):
                 raise ModuleNotFoundError('Mesa2py is not installed')
         except TypeError:
-            vs = mesa_vs.MesaVerticalStructure(M, alpha, r, F, abundance=abundance)
+            if magn_args is None:
+                vs = mesa_vs.MesaVerticalStructure(M, alpha, r, F, abundance=abundance,
+                                                   rad_pressure_include=rad_pressure_include)
+            else:
+                vs = mesa_vs.MesaVerticalStructureMagnetic(M, alpha, r, F, abundance=abundance,
+                                                           magn_args=magn_args,
+                                                           rad_pressure_include=rad_pressure_include)
     elif structure == 'MesaIdealGas':
         try:
             if np.isnan(mesa_vs):
                 raise ModuleNotFoundError('Mesa2py is not installed')
         except TypeError:
-            vs = mesa_vs.MesaIdealGasVerticalStructure(M, alpha, r, F, mu=mu, abundance=abundance)
+            if magn_args is None:
+                vs = mesa_vs.MesaIdealGasVerticalStructure(M, alpha, r, F, mu=mu, abundance=abundance,
+                                                           rad_pressure_include=rad_pressure_include)
+            else:
+                vs = mesa_vs.MesaIdealGasVerticalStructureMagnetic(M, alpha, r, F, mu=mu, abundance=abundance,
+                                                                   magn_args = magn_args,
+                                                                   rad_pressure_include=rad_pressure_include)
     elif structure == 'MesaAd':
         try:
             if np.isnan(mesa_vs):
                 raise ModuleNotFoundError('Mesa2py is not installed')
         except TypeError:
-            vs = mesa_vs.MesaVerticalStructureAd(M, alpha, r, F, abundance=abundance)
+            if magn_args is None:
+                vs = mesa_vs.MesaVerticalStructureAd(M, alpha, r, F, abundance=abundance,
+                                                     rad_pressure_include=rad_pressure_include)
+            else:
+                vs = mesa_vs.MesaVerticalStructureAdMagnetic(M, alpha, r, F, abundance=abundance,
+                                                             magn_args=magn_args,
+                                                             rad_pressure_include=rad_pressure_include)
     elif structure == 'MesaRadAd':
         try:
             if np.isnan(mesa_vs):
                 raise ModuleNotFoundError('Mesa2py is not installed')
         except TypeError:
-            vs = mesa_vs.MesaVerticalStructureRadAd(M, alpha, r, F, abundance=abundance)
+            if magn_args is None:
+                vs = mesa_vs.MesaVerticalStructureRadAd(M, alpha, r, F, abundance=abundance,
+                                                        rad_pressure_include=rad_pressure_include)
+            else:
+                vs = mesa_vs.MesaVerticalStructureRadAdMagnetic(M, alpha, r, F, abundance=abundance,
+                                                                magn_args=magn_args,
+                                                                rad_pressure_include=rad_pressure_include)
     elif structure == 'MesaRadConv':
         try:
             if np.isnan(mesa_vs):
                 raise ModuleNotFoundError('Mesa2py is not installed')
         except TypeError:
-            vs = mesa_vs.MesaVerticalStructureRadConv(M, alpha, r, F, abundance=abundance)
+            if magn_args is None:
+                vs = mesa_vs.MesaVerticalStructureRadConv(M, alpha, r, F, abundance=abundance,
+                                                          rad_pressure_include=rad_pressure_include)
+            else:
+                vs = mesa_vs.MesaVerticalStructureRadConvMagnetic(M, alpha, r, F, abundance=abundance,
+                                                          magn_args=magn_args,
+                                                          rad_pressure_include=rad_pressure_include)
     elif structure == 'MesaIrrZero':
         try:
             if np.isnan(mesa_vs):
@@ -316,7 +368,9 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
                      args_spectrum_irr=(), kwargs_spectrum_irr={},
                      cos_theta_irr=None, cos_theta_irr_exp=1 / 12, C_irr=None, T_irr=None,
                      z0r_estimation=None, Sigma0_estimation=None, P_ph_0=None, verbose=False,
-                     n=100, add_Pi_values=True, path_dots=None):
+                     n=100, add_Pi_values=True, path_dots=None,
+                     to_return=False, to_save=True, magn_args=None,
+                     rad_pressure_include=True):
     """
     Calculates vertical structure and makes table with disc parameters as functions of vertical coordinate.
     Table also contains input parameters of structure, parameters in the symmetry plane and parameter normalisations.
@@ -413,9 +467,23 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
         Whether to write Pi-parameters (see Ketsaris & Shakura, 1998) to the output file header.
     path_dots : str
         Where to save data table.
+    to_return : bool
+        Whether to return a namedtuple containing the calculated quantities and
+        debug data. Default is False.
+    to_save : bool
+        Whether to save the calculated data in a file. Default is True.
+    magn_args : dict or None, optional
+        The dictionary containing the parameters necessary for the magentic field
+        tretment. If None, the behaviour switches to a non-magnetic case.
+        Default is None.
+    rad_pressure_include : bool, optional
+        Whether to include the radiation pressure contribution in the equation
+        of state. Default is True.
 
     Returns
     -------
+    -------------------------- if to_save == True: ----------------------------
+
     Table with calculated Vertical disc profile will save to path_dots. Table contains:
         1) input parameters of the system -- M in Msun, alpha, r in cm and in rg, effective temperature Teff
            (viscous temperature Tvis in case of irradiation), accretion rate Mdot, viscous torque F,
@@ -442,16 +510,27 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
     In case of tabular EoS:
         5) grad_ad, free_e -- adiabatic temperature gradient dlnT/dlnP and
            mean number of free electrons per nucleon.
+           
+    ------------------------- if to_return == True: ---------------------------
+        A namedtuple containing:[
+                      "t", "S", "P", 'T', "Q", "rho", "varkappa", "tau", "grad",
+                      "r", "r_rg", "Sigma0", "Mdot", "Teff", "F", "z0r",
+                      "rho_C", "T_C", "P_C", "structure", 'mu',
+                       "PradPgas_C", "varkappa_C",
+                      "tau_C",
+                      "Pi1", "Pi2", "Pi3", "Pi4",
+                  ]
 
     """
-    if path_dots is None:
+    if path_dots is None and to_save:
         raise Exception("ATTENTION: the data wil not be saved, since 'path_dots' is None.")
     vs, F, Teff, Mdot = StructureChoice(M, alpha, r, Par, input, structure, mu, abundance,
                                         nu_irr=nu_irr, L_X_irr=L_X_irr,
                                         spectrum_irr=spectrum_irr, spectrum_irr_par=spectrum_irr_par,
                                         args_spectrum_irr=args_spectrum_irr, kwargs_spectrum_irr=kwargs_spectrum_irr,
                                         cos_theta_irr=cos_theta_irr, cos_theta_irr_exp=cos_theta_irr_exp,
-                                        C_irr=C_irr, T_irr=T_irr, F_in=F_in)
+                                        C_irr=C_irr, T_irr=T_irr, F_in=F_in, magn_args=magn_args,
+                                        rad_pressure_include=rad_pressure_include)
     if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
         kwargs_fit = {'z0r_estimation': z0r_estimation, 'Sigma0_estimation': Sigma0_estimation,
                       'verbose': verbose, 'P_ph_0': P_ph_0}
@@ -512,10 +591,28 @@ def Vertical_Profile(M, alpha, r, Par, input, structure, mu=0.6, abundance='sola
     header_norm = f'\nSigma_norm = {vs.sigma_norm:e}, P_norm = {vs.P_norm:e}, ' \
                   f'T_norm = {vs.T_norm:e}, Q_norm = {vs.Q_norm:e}'
     if add_Pi_values:
+        Pi1, Pi2, Pi3, Pi4 = vs.Pi_finder()
         header_Pi = '\nPi1 = {:f}, Pi2 = {:f}, Pi3 = {:f}, Pi4 = {:f}'.format(*vs.Pi_finder())
     header = header + header_input + header_C + header_norm + header_conv + header_Pi + header_input_irr
-    if path_dots is not None:
+    if path_dots is not None and to_save:
         np.savetxt(path_dots, dots_arr, header=header)
+    if to_return:
+        VertStructureResults = namedtuple("VertStructureResults", [
+                    "t", "S", "P", 'T', "Q", "rho", "varkappa", "tau", "grad",
+                    "r", "r_rg", "Sigma0", "Mdot", "Teff", "F", "z0r",
+                    "rho_C", "T_C", "P_C", "structure", 'mu',
+                     "PradPgas_C", "varkappa_C",
+                    "tau_C",
+                    "Pi1", "Pi2", "Pi3", "Pi4",
+                ])
+        _res = VertStructureResults(t=t, S=S, P=P, T=T, Q=Q, rho=rho,
+                varkappa=varkappa, tau=tau_arr, grad=grad_plot(np.log(P_full)),
+                r=r, r_rg=r/rg, Sigma0=Sigma0,
+                    Mdot=Mdot, Teff=Teff, F=F, z0r=z0r, rho_C=rho_C, T_C=T_C,
+                    P_C=P_C, structure=structure, mu=mu, PradPgas_C=delta,
+                    varkappa_C=varkappa_C, tau_C=tau, 
+                    Pi1=Pi1, Pi2=Pi2, Pi3=Pi3, Pi4=Pi4)
+        return _res
     return
 
 
@@ -523,7 +620,9 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
             L_X_irr=None, spectrum_irr=None, spectrum_irr_par=None, args_spectrum_irr=(), kwargs_spectrum_irr={},
             cos_theta_irr=None, cos_theta_irr_exp=1 / 12, C_irr=None, T_irr=None,
             z0r_start_estimation=None, Sigma0_start_estimation=None, P_ph_0=None, verbose=False,
-            n=100, tau_break=True, add_Pi_values=True, path_dots=None):
+            verbose_scurve=True,
+            n=100, tau_break=True, add_Pi_values=True, path_dots=None,
+            magn_args=None, rad_pressure_include=True, to_save=True, to_return=False):
     """
     Calculates S-curve and makes table with disc parameters on the S-curve.
     Table contains input parameters of system, surface density Sigma0, viscous torque F,
@@ -630,9 +729,27 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
         Whether to write Pi-parameters (see Ketsaris & Shakura, 1998) to the output file.
     path_dots : str
         Where to save data table.
-
+    verbose_scurve : bool
+        Whether to print info during the S-curve calculation.
+        Default is True.
+    to_return : bool
+        Whether to return a namedtuple containing the calculated quantities and
+        debug data. Default is False, and returned are: (Sigma_minus_index, 
+        Sigma_minus_index). If True, returned are: (Sigma_minus_index, 
+        Sigma_minus_index, SCurveResults). 
+    to_save : bool
+        Whether to save the calculated data in a file. Default is True.
+    magn_args : dict or None, optional
+        The dictionary containing the parameters necessary for the magentic field
+        tretment. If None, the behaviour switches to a non-magnetic case.
+        Default is None.
+    rad_pressure_include : bool, optional
+        Whether to include the radiation pressure contribution in the equation
+        of state. Default is True.
     Returns
-    -------
+    -------    
+    -------------------------- if to_save == True: ----------------------------
+
     Table with calculated S-curve will save to path_dots. Table contains:
         1) input parameters of the system -- M in Msun, alpha, r in cm and in rg, structure type,
            mu (in case of analytical EoS) or abundance (in case of tabular EoS);
@@ -655,9 +772,16 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
 
     Also table contains Sigma_plus_index, Sigma_minus_index -- turn point indexes of the S-curve.
     Finally, table contains 'Non-converged_fits' -- number of unsuccessfully fitted structures.
+    
+    ------------------------- if to_return == True: ---------------------------
+    If to_return == False, returned are: (Sigma_minus_index, 
+           Sigma_minus_index). If True, returned are: (Sigma_minus_index, 
+           Sigma_minus_index, SCurveResults). SCurveResults contain:
+            [Sigma0, Mdot, Teff, F, z0r, T_C,
+            rho_C, P_C, tau, PradPgas_C, varkappa_C].
 
     """
-    if path_dots is None:
+    if path_dots is None and to_return:
         raise Exception("ATTENTION: the data wil not be saved, since 'path_dots' is None.")
 
     Sigma_minus_index = 0
@@ -697,17 +821,26 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
             header += ' \tcost \tSigma_ph'
         header = header + '\nAll values are in CGS units.' + header_end
-        np.savetxt(path_dots, [], header=header)
+        if to_save:
+            np.savetxt(path_dots, [], header=header)
+        
+    SCurveResults = namedtuple("SCurveResults", [
+                "Sigma0", "Mdot", "Teff", "F", "z0r", "T_C",
+                "rho_C", "P_C", "tau", "PradPgas_C", "varkappa_C",
+            ])
+    acc = {k: [] for k in SCurveResults._fields}
 
     for i, Par in enumerate(np.geomspace(Par_max, Par_min, n)):
-        print(i)
+        if verbose_scurve:
+            print(i)
         vs, F, Teff, Mdot = StructureChoice(M, alpha, r, Par, input, structure, mu, abundance, F_in=F_in,
                                             nu_irr=nu_irr, L_X_irr=L_X_irr,
                                             spectrum_irr=spectrum_irr, spectrum_irr_par=spectrum_irr_par,
                                             args_spectrum_irr=args_spectrum_irr,
                                             kwargs_spectrum_irr=kwargs_spectrum_irr,
                                             cos_theta_irr=cos_theta_irr, cos_theta_irr_exp=cos_theta_irr_exp,
-                                            C_irr=C_irr, T_irr=T_irr)
+                                            C_irr=C_irr, T_irr=T_irr, magn_args=magn_args,
+                                            rad_pressure_include=rad_pressure_include)
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
             kwargs_fit = {'z0r_estimation': z0r_estimation, 'Sigma0_estimation': sigma_par_estimation,
                           'verbose': verbose, 'P_ph_0': P_ph_0}
@@ -718,8 +851,9 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
         try:
             result = vs.fit(**kwargs_fit)
         except Exception as e:
-            print(e)
-            print('Non-converged fit')
+            if verbose_scurve:
+                print(e)
+                print('Non-converged fit')
             Non_converged_fits += 1
             continue
         try:
@@ -734,19 +868,21 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
             pass
 
         tau = vs.tau()
-        print(f'Mdot = {Mdot:1.3e} g/s, {Teff_string} = {Teff:g} K, tau = {tau:g}, z0r = {z0r:g}')
+        if verbose_scurve:
+            print(f'Mdot = {Mdot:1.3e} g/s, {Teff_string} = {Teff:g} K, tau = {tau:g}, z0r = {z0r:g}')
 
         if tau < 1 and tau_break:
-            print('Note: tau<1, tau_break=True. Cycle ends, when tau<1.')
+            if verbose_scurve:
+                print('Note: tau<1, tau_break=True. Cycle ends, when tau<1.')
             break
 
         varkappa_C, rho_C, T_C, P_C, Sigma0 = vs.parameters_C()
         PradPgas_C = (4 * sigmaSB) / (3 * c) * T_C ** 4 / P_C
 
         output_string = [Sigma0, Teff, Mdot, F, z0r, rho_C, T_C, P_C, tau, PradPgas_C, varkappa_C]
-
-        print(f'Sigma0 = {Sigma0:g} g/cm^2')
-        print('Prad/Pgas_C = ', PradPgas_C)
+        if verbose_scurve:
+            print(f'Sigma0 = {Sigma0:g} g/cm^2')
+            print('Prad/Pgas_C = ', PradPgas_C)
 
         rho, eos = vs.law_of_rho(P_C, T_C, full_output=True)
         try:
@@ -765,7 +901,8 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
             QirrQvis = vs.Q_irr / vs.Q0
             T_irr_, C_irr_ = vs.T_irr, vs.C_irr
             output_string.extend([QirrQvis, T_irr_, C_irr_])
-            print(f'T_irr, C_irr = {T_irr_:g} K, {C_irr_:g}')
+            if verbose_scurve:
+                print(f'T_irr, C_irr = {T_irr_:g} K, {C_irr_:g}')
 
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
             output_string.extend([result.cost, vs.Sigma_ph])
@@ -792,20 +929,40 @@ def S_curve(Par_min, Par_max, M, alpha, r, input, structure, mu=0.6, abundance='
                 Sigma_plus_key = False
 
         output_string = np.array(output_string)
+        if to_save:
+            with open(path_dots, 'a') as file:
+                np.savetxt(file, output_string, newline=' ')
+                file.write('\n')
+        acc["Sigma0"].append(Sigma0)
+        acc["Teff"].append(Teff)
+        acc["z0r"].append(z0r)
+        acc["Mdot"].append(Mdot)
+        acc["F"].append(F)
+        acc["rho_C"].append(rho_C)
+        acc["P_C"].append(P_C)
+        acc["varkappa_C"].append(varkappa_C)
+        acc["tau"].append(tau)
+        acc["PradPgas_C"].append(PradPgas_C)
+        
+    if to_save:
         with open(path_dots, 'a') as file:
-            np.savetxt(file, output_string, newline=' ')
-            file.write('\n')
-    with open(path_dots, 'a') as file:
-        file.write(f'# Sigma_plus_index = {Sigma_plus_index:d}  Sigma_minus_index = {Sigma_minus_index:d}')
-        file.write(f'\n# Non-converged_fits = {Non_converged_fits}')
+            file.write(f'# Sigma_plus_index = {Sigma_plus_index:d}  Sigma_minus_index = {Sigma_minus_index:d}')
+            file.write(f'\n# Non-converged_fits = {Non_converged_fits}')
+    if to_return: 
+        acc_np = {k: np.asarray(v, dtype=float) for k, v in acc.items()}
+        results_tuple = SCurveResults(**acc_np)
+        return Sigma_minus_index, Sigma_plus_index, results_tuple
     return Sigma_minus_index, Sigma_plus_index
 
 
-def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abundance='solar', F_in=0,
+def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abundance='solar', F_in=0, 
                    nu_irr=None, L_X_irr=None, spectrum_irr=None, spectrum_irr_par=None, args_spectrum_irr=(),
                    kwargs_spectrum_irr={}, cos_theta_irr=None, cos_theta_irr_exp=1 / 12, C_irr=None, T_irr=None,
                    z0r_start_estimation=None, Sigma0_start_estimation=None, P_ph_0=None, verbose=False,
-                   n=100, tau_break=True, add_Pi_values=True, path_dots=None):
+                   verbose_rad=False, to_return=False, to_save=True,
+                   n=100, tau_break=True, add_Pi_values=True, path_dots=None,
+                   magn_args=None,
+                   rad_pressure_include=True):
     """
     Calculates radial structure of disc. Return table, which contains input parameters of the system,
     surface density Sigma0, viscous torque F, accretion rate Mdot, effective temperature Teff
@@ -916,6 +1073,23 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
     verbose : bool
         Whether to print values of free parameters at each iteration during fitting.
         Default is False, the fitting process performs silently.
+    verbose_rad : bool
+        Whether to print info during radial structure calculation at every radius.
+        Default is False, the radial calculation structure calculation process
+        performs silently.
+    to_return : bool
+        Whether to return a namedtuple containing the calculated quantities and
+        debug data. Default is False.
+    to_save : bool
+        Whether to save the calculated data in a file. Default is True.
+    magn_args : dict or None, optional
+        The dictionary containing the parameters necessary for the magentic field
+        tretment. If None, the behaviour switches to a non-magnetic case.
+        Default is None.
+    rad_pressure_include : bool, optional
+        Whether to include the radiation pressure contribution in the equation
+        of state. Default is True.
+        
     n : int
         Number of dots to calculate.
     tau_break : bool
@@ -927,6 +1101,8 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
 
     Returns
     -------
+    -------------------------- if to_save == True: ----------------------------
+        
     Table with calculated Radial disc profile will save to path_dots. Table contains:
         1) input parameters of the system -- M in Msun, alpha, structure type,
            mu (in case of analytical EoS) or abundance (in case of tabular EoS);
@@ -947,9 +1123,16 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
         8) cost, Sigma_ph -- cost function and column density of the layers above the photosphere.
            If structure is fitted successfully, cost must be less than 1e-16.
     Table also contains 'Non-converged_fits' -- number of unsuccessfully fitted structures.
-
+    
+    ------------------------- if to_return == True: --------------------------
+    RadStructureResults : namedtuple 
+        Contains the calculated quantities as numpy arrays. The attributes
+        have the same names as described above, 
+        e.g., the dependence of the Teff on radius may be plotted as
+         plt.plot(res.r, res.Teff).
+    
     """
-    if path_dots is None:
+    if (path_dots is None) and to_save:
         raise Exception("ATTENTION: the data wil not be saved, since 'path_dots' is None.")
 
     z0r_estimation = z0r_start_estimation
@@ -980,15 +1163,26 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
             header += ' \tcost \tSigma_ph'
         header = header + '\nAll values are in CGS units.' + header_end
-        np.savetxt(path_dots, [], header=header)
+        if to_save:
+            np.savetxt(path_dots, [], header=header)
 
     try:
         input_broadcast = np.broadcast(r_arr, Par, cos_theta_irr, cos_theta_irr_exp, C_irr, T_irr)
     except ValueError as e:
         raise ValueError(f'Array-like input parameters must have the same size n = {n}.') from e
+    RadStructureResults = namedtuple("RadStructureResults", [
+                "r", "r_rg", "Sigma0", "Mdot", "Teff", "F", "z0r",
+                "rho_C", "T_C", "P_C", "tau", "PradPgas_C", "varkappa_C",
+                "free_e", "conv_param_z", "conv_param_sigma",
+                "Pi1", "Pi2", "Pi3", "Pi4",
+                "QirrQvis", "T_irr_", "C_irr_",
+                "result_cost", "vs_Sigma_ph",
+            ])
+    acc = {k: [] for k in RadStructureResults._fields}
 
     for i, input_pars in enumerate(input_broadcast):
-        print(i)
+        if verbose_rad:
+            print(i)
         r = input_pars[0]
         vs, F, Teff, Mdot = StructureChoice(M=M, alpha=alpha, r=r, Par=input_pars[1], input=input,
                                             structure=structure, mu=mu, abundance=abundance, F_in=F_in,
@@ -997,7 +1191,9 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
                                             args_spectrum_irr=args_spectrum_irr,
                                             kwargs_spectrum_irr=kwargs_spectrum_irr,
                                             cos_theta_irr=input_pars[2], cos_theta_irr_exp=input_pars[3],
-                                            C_irr=input_pars[4], T_irr=input_pars[5])
+                                            C_irr=input_pars[4], T_irr=input_pars[5],
+                                            magn_args=magn_args,
+                                            rad_pressure_include=rad_pressure_include)
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
             kwargs_fit = {'z0r_estimation': z0r_estimation, 'Sigma0_estimation': sigma_par_estimation,
                           'verbose': verbose, 'P_ph_0': P_ph_0}
@@ -1008,8 +1204,9 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
         try:
             result = vs.fit(**kwargs_fit)
         except Exception as e:
-            print(e)
-            print('Non-converged fit')
+            if verbose_rad:
+                print(e)
+                print('Non-converged fit')
             Non_converged_fits += 1
             continue
         try:
@@ -1025,21 +1222,25 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
 
         tau = vs.tau()
         rg = 2 * G * M / c ** 2
-        print(f'r = {r:1.3e} cm = {r / rg:g} rg, Mdot = {Mdot:1.3e} g/s, '
+        if verbose_rad:
+            print(f'r = {r:1.3e} cm = {r / rg:g} rg, Mdot = {Mdot:1.3e} g/s, '
               f'{Teff_string} = {Teff:g} K, tau = {tau:g}, z0r = {z0r:g}')
 
         if tau < 1 and tau_break:
-            print('Note: tau<1, tau_break=True. Cycle ends, when tau<1.')
+            if verbose_rad:
+                print('Note: tau<1, tau_break=True. Cycle ends, when tau<1.')
             break
 
         varkappa_C, rho_C, T_C, P_C, Sigma0 = vs.parameters_C()
         PradPgas_C = (4 * sigmaSB) / (3 * c) * T_C ** 4 / P_C
 
-        output_string = [r, r / rg, Sigma0, Mdot, Teff, F, z0r, rho_C, T_C, P_C, tau, PradPgas_C, varkappa_C]
-        print(f'Sigma0 = {Sigma0:g} g/cm^2')
-        print('Prad/Pgas_C = ', PradPgas_C)
+        output_string = [r, r / rg, Sigma0, Mdot, Teff, F, z0r, rho_C, T_C, P_C, tau, PradPgas_C, varkappa_C] 
+        if verbose_rad:
+            print(f'Sigma0 = {Sigma0:g} g/cm^2')
+            print('Prad/Pgas_C = ', PradPgas_C)
 
         rho, eos = vs.law_of_rho(P_C, T_C, full_output=True)
+        free_e, conv_param_z, conv_param_sigma = np.nan, np.nan, np.nan
         try:
             _ = eos.c_p
             free_e = np.exp(eos.lnfree_e)
@@ -1047,26 +1248,61 @@ def Radial_Profile(M, alpha, r_start, r_end, Par, input, structure, mu=0.6, abun
             output_string.extend([free_e, conv_param_z, conv_param_sigma])
         except AttributeError:
             pass
-
+        Pi1, Pi2, Pi3, Pi4 = np.nan, np.nan, np.nan, np.nan
         if add_Pi_values:
-            output_string.extend(vs.Pi_finder())
-
+            Pi1, Pi2, Pi3, Pi4 = vs.Pi_finder()
+            output_string.extend([Pi1, Pi2, Pi3, Pi4])
+        QirrQvis, T_irr_, C_irr_ = np.nan, np.nan, np.nan
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr',
                          'MesaIrrZero', 'MesaRadAdIrrZero', 'MesaRadConvIrrZero']:
             QirrQvis = vs.Q_irr / vs.Q0
             T_irr_, C_irr_ = vs.T_irr, vs.C_irr
             output_string.extend([QirrQvis, T_irr_, C_irr_])
-            print(f'T_irr, C_irr = {T_irr_:g} K, {C_irr_:g}')
-
+            if verbose_rad:
+                print(f'T_irr, C_irr = {T_irr_:g} K, {C_irr_:g}')
+        
+        result_cost, vs_Sigma_ph = np.nan, np.nan
         if structure in ['MesaIrr', 'MesaRadAdIrr', 'MesaRadConvIrr']:
-            output_string.extend([result.cost, vs.Sigma_ph])
+            result_cost, vs_Sigma_ph = result.cost, vs.Sigma_ph
+            output_string.extend([result_cost, vs_Sigma_ph])
 
         output_string = np.array(output_string)
+        if to_save:
+            with open(path_dots, 'a') as file:
+                np.savetxt(file, output_string, newline=' ')
+                file.write('\n')
+        acc["r"].append(r)
+        acc["r_rg"].append(r / rg)
+        acc["Sigma0"].append(Sigma0)
+        acc["Mdot"].append(Mdot)
+        acc["Teff"].append(Teff)
+        acc["F"].append(F)
+        acc["z0r"].append(z0r)
+        acc["rho_C"].append(rho_C)
+        acc["T_C"].append(T_C)
+        acc["P_C"].append(P_C)
+        acc["tau"].append(tau)
+        acc["PradPgas_C"].append(PradPgas_C)
+        acc["varkappa_C"].append(varkappa_C)
+        acc["free_e"].append(free_e)
+        acc["conv_param_z"].append(conv_param_z)
+        acc["conv_param_sigma"].append(conv_param_sigma)
+        acc["Pi1"].append(Pi1)
+        acc["Pi2"].append(Pi2)
+        acc["Pi3"].append(Pi3)
+        acc["Pi4"].append(Pi4)
+        acc["QirrQvis"].append(QirrQvis)
+        acc["T_irr_"].append(T_irr_)
+        acc["C_irr_"].append(C_irr_)
+        acc["result_cost"].append(result_cost)
+        acc["vs_Sigma_ph"].append(vs_Sigma_ph)
+    if to_save:
         with open(path_dots, 'a') as file:
-            np.savetxt(file, output_string, newline=' ')
-            file.write('\n')
-    with open(path_dots, 'a') as file:
-        file.write(f'# Non-converged_fits = {Non_converged_fits}')
+            file.write(f'# Non-converged_fits = {Non_converged_fits}')
+    acc_np = {k: np.asarray(v, dtype=float) for k, v in acc.items()}
+    results_tuple = RadStructureResults(**acc_np)
+    if to_return:
+        return results_tuple
     return
 
 

@@ -311,16 +311,64 @@ print(varkappa_C, rho_C, T_C, P_C)  # Opacity, bulk density, temperature and gas
 print(Sigma0)  # Surface density of disc
 print(vertstr.tau())  # optical thickness of disc
 print(vertstr.C_irr, vertstr.T_irr)  # irradiation parameter and temperature
+
+
 ```
+
+## Magnetic field treatment
+To calculate the structure of an accretion disc around a magnetized object with its own magnetic
+field, we added the argument `magn_args` containing all info related to the magnetic field. This is a dictionary
+that can contain the following fields:
+```python
+magn_args = {'model': "KuzinLipunova", # model of the magnetic torque and truncation radius,
+             'r_star': 1.2e6, # the star raduis; here - neutron star,
+            'mu_magn': 1e28, # magnetic dipole moment of the star,
+            'freq':200, # frequency of the star spin, 
+            'chi_deg':45, # the angle between the star rotation axis and the dipole axis,
+            'r_out_magn': 'rlight', # for r > r_out_magn, the magnetic field is set to zero everywhere,
+             'r_lower_limit': 1.3e6, 'r_upper_limit': 'rcor', # hard lower/upper limits for r_inner
+            ########### and some other model-specific keywords: ###############
+            'eta': 1, 'kappa': 0.5,  'kappa_prime':0.5, 'delta0_in':0.05,
+             "ra_coef":0.5, 'kappa_alfven':0.1}
+```
+The magnetic field support is added for all cases without an external irradiation. For every class of the vertical
+structure with the name `SomeName`, there is a class `SomeNameMagnetic` supporting the argument `magn_args`.
+An example of the vetical structure calculation with a magnetic field with tabular opacicities and EoS:
+```python
+from alpha_disc import mesa_vs
+
+M = 2e33 
+alpha = 0.01 
+r = 2e9 
+F = 2e34 
+
+magn_args = {'model': 'KuzinLipunova', 'mu_magn': 1e27, 'eta': 0.8, 'r_star': 1.2e6,
+            'freq':200, 'kappa': 0.02, 'chi_deg':30, 'kappa_prime':0.03, 'delta0_in':0.05,
+            'r_out_magn': 'rlight', 'r_lower_limit': 1.3e6, 'r_upper_limit': 'rcor'}
+vertstr = mesa_vs.MesaVerticalStructureRadConvMagnetic(Mx=M, alpha=alpha, r=r, F=F,
+                                                      magn_args=magn_args) 
+z0r, result = vertstr.fit() 
+varkappa_C, rho_C, T_C, P_C, Sigma0 = vertstr.parameters_C()
+print(z0r)  
+print(varkappa_C, rho_C, T_C, P_C)  
+print(Sigma0)  
+print(vertstr.tau()) 
+
+```
+
 
 ## Structure choice
 Module `profiles`, containing `StructureChoice()` function, serves as interface for creating 
 the right structure object in a simpler way. The input parameter of all structure classes is `F` - viscous torque. 
 One can use other input parameters instead viscous torque `F` (such as effective temperature $T_{\rm eff}$ and accretion rate $\dot{M}$) using `input` parameter, and choose the structure type using `structure` parameter. The relation between $T_{\rm eff}, \dot{M}$ and $F$:
 ```math
-    \sigma_{\rm SB}T_{\rm eff}^4 = \frac{3}{8\pi} \frac{F\omega_{\rm K}}{r^2}, \quad F = \dot{M}h \left(1 - \sqrt{\frac{r_{\rm in}}{r}}\right) + F_{\rm in},
+    \sigma_{\rm SB}T_{\rm eff}^4 = \frac{3}{8\pi} \frac{F\omega_{\rm K}}{r^2}, \quad F = \dot{M}h \left(1 - \sqrt{\frac{r_{\rm in}}{r}}\right) + F_{\rm in} + F_\mathrm{magn},
 ```
-where $r_{\rm in} = 3r_{\rm g}=6GM/c^2$. The default value of viscous torque at the inner boundary of the disc $F_{\rm in}=0$ (it corresponds to Schwarzschild black hole as central source). If $F_{\rm in}\neq0$ you should set the non-zero value of $F_{\rm in}$ manually (`F_in` parameter) for correct calculation of the relation above.
+where $r_{\rm in} = 3r_{\rm g}=6GM/c^2$ without the magnetic field or $r_\mathrm{in}=r_\mathrm{in}(\dot{M})$ with the magnetic field. The default value of viscous torque at the inner boundary of the disc 
+$F_{\rm in}=0$ (it corresponds to Schwarzschild black hole as central source). If $F_{\rm in}\neq0$ you should set the non-zero value of $F_{\rm in}$ manually (`F_in` parameter) for correct calculation of the relation above.
+
+**Note**: The examples below are given for the non-magnetic case, but all used methods: `StructureChoice`, `Vertical_Profile`, 
+`S_curve`, `Radial_Profile` support the magnetic argument `magn_args` described above.
 
 Usage:
 ``` python3
@@ -413,6 +461,20 @@ column density, temperature and energy flux in the disc and $\alpha$ is Shakura-
 parameter ([Shakura & Sunyaev
 1973](https://ui.adsabs.harvard.edu/abs/1973A&A....24..337S)). By default, the inner viscous torque $F_{\rm in}=0$ (this case corresponds to a black hole as an accretor). 
 
+In the magnetic case, the first equation and the boundary conditions $P(z\_0)$ and $Q\_0$ are modified. 
+Namely, the equation of the hydromagnetostatics with the modified pressure boundary is
+```math
+\begin{split}
+\frac{{\rm d}P}{{\rm d}z} &= -\rho\,\omega^2_{K} z - \frac{{\rm d}P_\mathrm{magn,~induced}}{{\rm d}z} \qquad\quad\,\, P_{\rm gas}(z_0) = P' + \Delta P_\mathrm{magn,~photosphere}; \\
+\end{split}
+```
+where both magnetic modifications are usually known functions of $r$ and $z$, and the $Q\_0$ naturally changes:
+```math
+\begin{equation}
+    Q_0 = \frac{3}{8 \pi} \frac{F \omega_K}{r^2} = \frac{3}{8 \pi} \frac{\omega_K}{r^2} \left(F_\mathrm{no~field} + F_\mathrm{magn}\right).
+\end{equation}
+```
+
 The temperature gradient $\nabla\equiv\frac{{\rm d}\ln T}{{\rm d}\ln P}$ is defined according to the Schwarzschild criterion:
 
 ```math
@@ -456,7 +518,7 @@ After the normalizing $P_{\rm gas}, Q, T, \Sigma$ on their characteristic values
 and replacing $z$ on $\hat{z} = 1 - z/z_0$ (in code it is the `t` variable), one has:
 ```math
 \begin{split}
-\frac{{\rm d}\hat{P}}{{\rm d}\hat{z}} &= \frac{z_0^2}{P_0}\,\omega^2_{\rm K} \,\rho (1-\hat{z}) - \frac{4aT_0^3}{3 P_0} \frac{{\rm d}\hat{T}}{{\rm d}\hat{z}} \qquad\qquad \hat{P}(0) = P'/P_0; \\ 
+\frac{{\rm d}\hat{P}}{{\rm d}\hat{z}} &= \frac{z_0^2}{P_0}\,\omega^2_{\rm K} \,\rho (1-\hat{z}) - \frac{4aT_0^3}{3 P_0} \frac{{\rm d}\hat{T}}{{\rm d}\hat{z}} + \frac{z_0}{P_0} \frac{{\rm d}P_\mathrm{magn,~induced}}{{\rm d}z}  \qquad\qquad \hat{P}(0) = (P' + \Delta P_\mathrm{magn})/P_0; \\ 
 \frac{{\rm d}\hat{\Sigma}}{{\rm d}\hat{z}} &= 2\,\frac{z_0}{\Sigma_{00}}\,\rho \qquad\qquad\qquad\qquad\qquad\qquad\qquad  \hat{\Sigma}(0) = 0; \\
 \frac{{\rm d}\hat{T}}{{\rm d}\hat{z}} &= \nabla \frac{\hat{T}}{P_{\rm tot}} z_0^2\,\omega^2_{\rm K} \,\rho (1-\hat{z}) \quad\qquad\qquad\qquad \hat{T}(0) = T_{\rm eff}/T_0; \\
 \frac{{\rm d}\hat{Q}}{{\rm d}\hat{z}} &= -\frac32\,\frac{z_0}{Q_0}\,\omega_{\rm K} \alpha P_{\rm tot} \qquad\qquad\qquad \hat{Q}(0) = 1, \quad \hat{Q}(1) = 0; \\
