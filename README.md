@@ -11,6 +11,7 @@ the analytical and tabular MESA equations of state (EoS) and opacities.
       * [Tabular opacities and EoS](#tabular-opacities-and-eos)
    * [Calculate structure](#calculate-structure)
    * [Irradiated discs](#irradiated-discs)
+   * [Magnetic field treatment](#magnetic-field-treatment)
    * [Structure Choice](#structure-choice)
    * [Vertical and radial profile calculation, S-curves](#vertical-and-radial-profile-calculation-s-curves)
    * [Physical background](#physical-background)
