@@ -2,8 +2,15 @@ name: Docker Image CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: 
+      - '**'
+    paths-ignore:
+      - LICENCE.md
+      - README.md
   pull_request:
+    paths-ignore: 
+      - LICENCE.md
+      - README.md
 
 permissions:
   contents: read
