@@ -5,6 +5,10 @@ on:
     branches: [ "master" ]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
 
   build-and-test:
@@ -23,7 +27,7 @@ jobs:
 
     # If OK, then tag/log/push
     - name: Log in to GitHub Container Registry
-      if: success()
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -31,10 +35,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Tag image for GHCR
-      if: success()
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       run: docker tag alphadisc:test ghcr.io/andreytavleev/alphadisc:latest
 
     - name: Push image to GHCR
-      if: success()
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       run: docker push ghcr.io/andreytavleev/alphadisc:latest
 
